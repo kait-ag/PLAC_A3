@@ -106,6 +106,7 @@ struct body {
 		vel = vec2(vx, vy);
 		mass = m;
 		radius = r;
+		//Maybe put a thread in here?
 	}
 };
 

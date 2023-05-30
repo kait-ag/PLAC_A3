@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cmath>
 #include <chrono>
+#include <thread>
 
 // Project Headers
 #include "nbody.h"
@@ -13,8 +14,8 @@
 #endif
 
 // Number of particles
-#define SMALL
-//#define LARGE
+//#define SMALL
+#define LARGE
 
 #if defined(SMALL)
 	const int N = 1000;
@@ -35,16 +36,28 @@ const int height = 1080;
 // Bodies
 body bodies[N];
 
+void threadUpdateBody(int i, vec2 acc[]){
+	// Update Position
+	bodies[i].pos += bodies[i].vel * dt;
+
+	// Update Velocity
+	bodies[i].vel += acc[i] * dt;
+}
+
 // Update Nbody Simulation
-void update() {
+void update() { //what can llel???
+
 	// Acceleration
 	vec2 acc[N];
 
 	// Clear Acceleration
-	for(int i = 0; i < N; ++i) {
+	for(int i = 0; i < N; ++i) { //Not needed
 		acc[i] = vec2(0,0);
 	}
 
+	//For each update loop create an array of threads which will calculate bodyUpdate parallel to everything else
+	std::thread bodyUpdateArray[N];
+	//std::chrono::system_clock::time_point time1 = std::chrono::system_clock::now();
 	// For each body
 	for(int i = 0; i < N; ++i) {
 		// For each following body
@@ -67,17 +80,30 @@ void update() {
 				acc[i] += (u * f / bodies[i].mass);
 				acc[j] -= (u * f / bodies[j].mass);
 			}
+		//std::chrono::system_clock::time_point time1b = std::chrono::system_clock::now();
+
 		}
+		// all done with my calc
+		bodyUpdateArray[i] = std::thread(threadUpdateBody, i, acc); //add thread process for this body to array
+		//std::chrono::system_clock::time_point time2b = std::chrono::system_clock::now();
+		//std::cout << "Time Thread: " << std::chrono::duration_cast<std::chrono::microseconds>(time2b - time1).count()/1000000.0 << std::endl; 
+
 	}
 
-	// For each body
-	for(int i = 0; i < N; ++i) {
-		// Update Position
-		bodies[i].pos += bodies[i].vel * dt;
-
-		// Update Velocity
-		bodies[i].vel += acc[i] * dt;
+	//waiting for all threads to finish
+	for(int i = 0 ; i < N ; i++){
+		bodyUpdateArray[i].join();
 	}
+
+	// // For each body
+	// // Put into thread????
+	// for(int i = 0; i < N; ++i) {
+	// 	// Update Position
+	// 	bodies[i].pos += bodies[i].vel * dt;
+
+	// 	// Update Velocity
+	// 	bodies[i].vel += acc[i] * dt;
+	// }
 }
 
 // Initialise NBody Simulation
@@ -134,6 +160,7 @@ void initialise() {
 				
 				// Draw Object
 				window.draw(shape);
+
 			}
 
 			// Display Window
@@ -150,7 +177,7 @@ void initialise() {
 		std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
 
 		// Run Simulation
-		for(int i = 0; i < NO_STEPS; i++) {
+		for(int i = 0; i < NO_STEPS; i++) { //Updating 1000 times
 			// Update NBody Simluation
 			update();
 		}

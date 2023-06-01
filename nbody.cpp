@@ -23,7 +23,7 @@
 //#define LARGE
 
 #if defined(SMALL)
-	const int N = 100;
+	const int N = 1000;
 #elif defined(LARGE)
 	const int N = 5000;
 #endif
@@ -41,51 +41,50 @@ const int height = 1080;
 // Bodies
 body bodies[N];
 
-class ThreadPool{
-	//Class needs to hold a waiting queue, threads, 
-	public:
-        ThreadPool(std::size_t threadNum);
-        void queueJob(std::function<void()> &job);
+std::mutex queueMutex; //mutex to protect the jobqueue
+std::queue<std::function<void()>> jobQueue; //std::function<void()> is a place holder for a random tbd function that the queue will hold
+std::vector<std::thread> threads; //
+std::condition_variable queueCV;
+bool terminate = false;
 
-    private:
-	void runTask();
-	std::mutex queueMutex; //mutex to protect the jobqueue
-	std::queue<std::function<void()>> jobQueue; //std::function<void()> is a place holder for a random tbd function that the queue will hold
-	std::vector<std::thread> threads; //
-	std::condition_variable queueCV;
-};
-
-ThreadPool::ThreadPool(std::size_t threadNum){
-	for (size_t i = 0 ; i < threadNum; i++){
-		threads.emplace_back( );
-	}
-}
-
-void ThreadPool::queueJob(std::function<void()> &job){
+void queueJob(std::function<void()> job){
 	{
 		//need to lock queue
 		std::unique_lock<std::mutex> lockQueue(queueMutex);
 		jobQueue.push(job);
+		//std::cout << "\nPushed Job"; 
+
 	}
 	queueCV.notify_one();
 
 }
 
-void ThreadPool::runTask(){
+void runTask(){
 	//Always running! will do something when there is a function in the queue
 	while(true){
 		std::function<void()> currentJob;
 		{
 			//lock queue
 			std::unique_lock<std::mutex> lock(queueMutex);
-			queueCV.wait(lock, [this] {
-				return !jobQueue.empty();
+			queueCV.wait(lock, [] {
+				return !jobQueue.empty() || terminate;
 			});
-			currentJob = jobQueue.front();
+			if(terminate && jobQueue.empty()) break;
+			currentJob = std::move(jobQueue.front());
 			jobQueue.pop();
 		}
-
+		currentJob();
+		//std::cout << "\nJob Finished ";
 	}
+}
+
+bool checkQueue(){ //checks jobqueue to see if there are any waiting / processing threads. If there are returns false
+	bool queueEmpty;
+	{
+		std::unique_lock<std::mutex> lock(queueMutex);
+		queueEmpty = jobQueue.empty();
+	}
+	return queueEmpty;
 }
 
 // Update Nbody Simulation
@@ -101,35 +100,32 @@ void update() { //what can llel???
 
 	//For each update loop create an array of threads which will calculate bodyUpdate parallel to everything else
 	//std::thread bodyUpdateArray[N];
-	std::vector<std::thread> innerLoopThread;
 	std::mutex protectMutex; //
 	std::mutex controlMutex;
 	std::mutex threadCountMutex;
 	std::condition_variable cv;
 
 	int activeThreads = 0;
-	const int maxThreads = 100; //N/10; //Max number of threads depends on total no bodies. A ration between cost savings and cost to make threads
+	const int maxThreads = 300; //N/10; //Max number of threads depends on total no bodies. A ration between cost savings and cost to make threads
 
-	std::chrono::system_clock::time_point time1 = std::chrono::system_clock::now();
+	for (size_t i = 0 ; i < maxThreads; i++){
+		threads.emplace_back(runTask);
+	}
+
 	// For each body
 	for(int i = 0; i < N; ++i) {
+		std::chrono::system_clock::time_point time1 = std::chrono::system_clock::now();
+		std::cout << "\nStarting Big Loop" << i; 
+
 		//THREADED SECTION
 		// For each following body
+		std::cout << "j value";
 		for(int j = i+1; j < N; ++j) {
-			//std::cout << "\nLOOP" << activeThreads;
+		if (j == i+1) std::cout << "\nStarting SMALL Loop" << j; 
 
 			//wait until thread is avaliable
-			std::unique_lock<std::mutex> mutLock(controlMutex);
-
-			//std::lock_guard<std::mutex> guardActiveThreads(threadCountMutex);
-			//while (activeThreads > maxThreads){cv.wait(mutLock);}
-			cv.wait(mutLock, [&activeThreads, maxThreads]() {return activeThreads <= maxThreads;}); //NEED TO PROTECT ACTIVE THREAD
-
-			innerLoopThread.emplace_back([&acc, i, j, &protectMutex, &threadCountMutex, &cv, &activeThreads](){
-
-				threadCountMutex.lock();
-				activeThreads++; //Protect??
-				threadCountMutex.unlock();
+			queueJob([&acc, i, j](){
+			if (j == i+1) std::cout << "\nStarting Thread " << j; 
 
 				// Difference in position
 				vec2 dx = bodies[i].pos - bodies[j].pos;
@@ -145,50 +141,45 @@ void update() { //what can llel???
 					// Force between bodies
 					double f = -G*bodies[i].mass*bodies[j].mass / d2;
 
-					std::lock_guard<std::mutex> lg(protectMutex);
+					std::lock_guard<std::mutex> lg(queueMutex);
 					// Add to acceleration
 					acc[i] += (u * f / bodies[i].mass); //Okay to do threaded as not depended as value. HOWEVER CRIT SECTION SO PROTECT
 					acc[j] -= (u * f / bodies[j].mass);
 				}
-
-				threadCountMutex.lock();
-				if (activeThreads > maxThreads) {
-					activeThreads--; //Protect??
-					cv.notify_one(); //notifies a thread that it can continue
-				} else{activeThreads--;}
-				threadCountMutex.unlock();
-
-
-			});
+			} );
+			//std::lock_guard<std::mutex> guardActiveThreads(threadCountMutex);
+			//while (activeThreads > maxThreads){cv.wait(mutLock);}
 		}
 
+		while(!checkQueue()){
+			//RUNNN
+		}
+
+		{
+			std::unique_lock<std::mutex> lock(queueMutex);
+			terminate = true; //runTask accesses so have to protect
+		}
+		queueCV.notify_all();
 		std::chrono::system_clock::time_point time1b = std::chrono::system_clock::now();
-		
-	// 	// Threaded
-	// 	bodyUpdateArray[i] = std::thread([&acc, i] {
-	// 		// Update Position
-	// 		bodies[i].pos += bodies[i].vel * dt;
+			
+		// 	//std::chrono::system_clock::time_point time2b = std::chrono::system_clock::now();
+		std::cout << "\nTime SMALL loop: " << std::chrono::duration_cast<std::chrono::microseconds>(time1b - time1).count()/1000000.0 << std::endl; 
 
-	// 		// Update Velocity
-	// 		bodies[i].vel += acc[i] * dt;
-	// 	}); 
-		
-	// 	//std::chrono::system_clock::time_point time2b = std::chrono::system_clock::now();
-	std::cout << "\nTime Big loop: " << std::chrono::duration_cast<std::chrono::microseconds>(time1b - time1).count()/1000000.0 << std::endl; 
-	// 	}
+		//Ensure all the inner loop threads are finished
+		for (auto &thread : threads){
 
-	//Ensure all the inner loop threads are finished
-	for (auto &thread : innerLoopThread){
-		if(thread.joinable()){
-			thread.join();
+			if(thread.joinable()){
+				thread.join();
+			}
+				//std::cout << "\nSUP"; 
 		}
+				std::cout << "\nNo" << i; 
+
 	}
-	innerLoopThread.clear();
-	
-	// //waiting for all threads to finish
-	// for(int i = 0 ; i < N ; i++){
-	// 	bodyUpdateArray[i].join();
-	// }
+
+	int test = 0;
+	std::cout << "\n update: " << test;
+	test++;
 
 	// For each body
 	// Put into thread????
@@ -199,8 +190,22 @@ void update() { //what can llel???
 		// Update Velocity
 		bodies[i].vel += acc[i] * dt;
 	}
-	}
 }
+
+
+// 	// Threaded
+// 	bodyUpdateArray[i] = std::thread([&acc, i] {
+// 		// Update Position
+// 		bodies[i].pos += bodies[i].vel * dt;
+
+// 		// Update Velocity
+// 		bodies[i].vel += acc[i] * dt;
+// 	}); 
+
+// //waiting for all threads to finish
+// for(int i = 0 ; i < N ; i++){
+// 	bodyUpdateArray[i].join();
+// }
 
 // Initialise NBody Simulation
 void initialise() {

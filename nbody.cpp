@@ -21,7 +21,7 @@
 //#define LARGE
 
 #if defined(SMALL)
-	const int N = 100;
+	const int N = 10;
 #elif defined(LARGE)
 	const int N = 5000;
 #endif
@@ -38,6 +38,8 @@ const int height = 1080;
 
 // Bodies
 body bodies[N];
+std::mutex coutMut;
+
 
 // Update Nbody Simulation
 void update() { //what can llel???
@@ -52,35 +54,35 @@ void update() { //what can llel???
 
 	//For each update loop create an array of threads which will calculate bodyUpdate parallel to everything else
 	//std::thread bodyUpdateArray[N];
-	std::vector<std::thread> innerLoopThread;
+	//std::vector<std::thread> innerLoopThread;
 	std::mutex protectMutex; //
 	std::mutex controlMutex;
 	std::mutex threadCountMutex;
 	std::condition_variable cv;
 
-	int activeThreads = 0;
-	const int maxThreads = 100; //N/10; //Max number of threads depends on total no bodies. A ration between cost savings and cost to make threads
+	const int MAX_THREADS = 10; //N/10; //Max number of threads depends on total no bodies. A ration between cost savings and cost to make threads
 
 	std::chrono::system_clock::time_point time1 = std::chrono::system_clock::now();
 	// For each body
 	for(int i = 0; i < N; ++i) {
+		size_t activeThreads = 0;
+
 		//THREADED SECTION
 		// For each following body
 		for(int j = i+1; j < N; ++j) {
-			//std::cout << "\nLOOP" << activeThreads;
-
+			coutMut.lock();
+			coutMut.unlock();
 			//wait until thread is avaliable
-			std::unique_lock<std::mutex> mutLock(controlMutex);
+			std::unique_lock<std::mutex> lock(controlMutex);
+			cv.wait(lock, [&activeThreads, MAX_THREADS]() {return activeThreads < MAX_THREADS;}); //NEED TO PROTECT ACTIVE THREAD
+			
+			threadCountMutex.lock();
+			activeThreads++;
+			threadCountMutex.unlock();
+			std::cout << "\nStarted thread" << activeThreads;
+			lock.unlock();
 
-			//std::lock_guard<std::mutex> guardActiveThreads(threadCountMutex);
-			//while (activeThreads > maxThreads){cv.wait(mutLock);}
-			cv.wait(mutLock, [&activeThreads, maxThreads]() {return activeThreads <= maxThreads;}); //NEED TO PROTECT ACTIVE THREAD
-
-			innerLoopThread.emplace_back([&acc, i, j, &protectMutex, &threadCountMutex, &cv, &activeThreads](){
-
-				threadCountMutex.lock();
-				activeThreads++; //Protect??
-				threadCountMutex.unlock();
+			std::thread thread1([&acc, i, j, &protectMutex, &threadCountMutex, &cv, &activeThreads, &lock](){
 
 				// Difference in position
 				vec2 dx = bodies[i].pos - bodies[j].pos;
@@ -101,20 +103,37 @@ void update() { //what can llel???
 					acc[i] += (u * f / bodies[i].mass); //Okay to do threaded as not depended as value. HOWEVER CRIT SECTION SO PROTECT
 					acc[j] -= (u * f / bodies[j].mass);
 				}
+				//PROTECT MUTEX
 
+				//lock.lock();
 				threadCountMutex.lock();
-				if (activeThreads > maxThreads) {
-					activeThreads--; //Protect??
-					cv.notify_one(); //notifies a thread that it can continue
-				} else{activeThreads--;}
+				activeThreads--; //Protect??
+				std::cout << "\nThread finished: " << activeThreads;
 				threadCountMutex.unlock();
 
+				//lock.unlock();
 
+				coutMut.lock();
+				std::cout << "\nUNLOCKED";
+				coutMut.unlock();
+
+				cv.notify_one(); //notifies a thread that it can continue
 			});
+			thread1.detach();
 		}
 
 		std::chrono::system_clock::time_point time1b = std::chrono::system_clock::now();
-		
+
+		//Ensure all the inner loop threads are finished
+		// for (auto &thread : innerLoopThread){
+		// 	if(thread.joinable()){
+		// 		thread.join();
+		// 	}
+		// }
+
+	std::unique_lock<std::mutex> finishedThreadLock(controlMutex);
+	cv.wait(finishedThreadLock, [&activeThreads]() {return activeThreads == 0;});
+
 	// 	// Threaded
 	// 	bodyUpdateArray[i] = std::thread([&acc, i] {
 	// 		// Update Position
@@ -128,13 +147,8 @@ void update() { //what can llel???
 	std::cout << "\nTime Big loop: " << std::chrono::duration_cast<std::chrono::microseconds>(time1b - time1).count()/1000000.0 << std::endl; 
 	// 	}
 
-	//Ensure all the inner loop threads are finished
-	for (auto &thread : innerLoopThread){
-		if(thread.joinable()){
-			thread.join();
-		}
-	}
-	innerLoopThread.clear();
+
+	// innerLoopThread.clear();
 	
 	// //waiting for all threads to finish
 	// for(int i = 0 ; i < N ; i++){

@@ -6,6 +6,8 @@
 #include <vector>
 #include <mutex>
 #include <condition_variable>
+#include <queue>
+#include <functional>
 
 // Project Headers
 #include "nbody.h"
@@ -38,6 +40,53 @@ const int height = 1080;
 
 // Bodies
 body bodies[N];
+
+class ThreadPool{
+	//Class needs to hold a waiting queue, threads, 
+	public:
+        ThreadPool(std::size_t threadNum);
+        void queueJob(std::function<void()> &job);
+
+    private:
+	void runTask();
+	std::mutex queueMutex; //mutex to protect the jobqueue
+	std::queue<std::function<void()>> jobQueue; //std::function<void()> is a place holder for a random tbd function that the queue will hold
+	std::vector<std::thread> threads; //
+	std::condition_variable queueCV;
+};
+
+ThreadPool::ThreadPool(std::size_t threadNum){
+	for (size_t i = 0 ; i < threadNum; i++){
+		threads.emplace_back( );
+	}
+}
+
+void ThreadPool::queueJob(std::function<void()> &job){
+	{
+		//need to lock queue
+		std::unique_lock<std::mutex> lockQueue(queueMutex);
+		jobQueue.push(job);
+	}
+	queueCV.notify_one();
+
+}
+
+void ThreadPool::runTask(){
+	//Always running! will do something when there is a function in the queue
+	while(true){
+		std::function<void()> currentJob;
+		{
+			//lock queue
+			std::unique_lock<std::mutex> lock(queueMutex);
+			queueCV.wait(lock, [this] {
+				return !jobQueue.empty();
+			});
+			currentJob = jobQueue.front();
+			jobQueue.pop();
+		}
+
+	}
+}
 
 // Update Nbody Simulation
 void update() { //what can llel???

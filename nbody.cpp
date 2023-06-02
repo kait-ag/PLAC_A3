@@ -6,6 +6,8 @@
 #include <vector>
 #include <mutex>
 #include <condition_variable>
+#include <functional>
+#include <queue>
 
 // Project Headers
 #include "nbody.h"
@@ -31,6 +33,7 @@ const double min2 = 2.0;
 const double G = 1 * 10e-10;
 const double dt = 0.05;
 const int NO_STEPS = 1000;
+const int MAX_THREADS = 3; //N/10; //Max number of threads depends on total no bodies. A ration between cost savings and cost to make threads
 
 // Size of Window/Output image
 const int width = 1920;
@@ -40,6 +43,54 @@ const int height = 1080;
 body bodies[N];
 std::mutex coutMut;
 //std::mutex test;
+
+class ThreadPool{
+	public:
+	explicit ThreadPool(const std::size_t threadNum);
+	void queueJob(std::function<void()> job);
+
+	private:
+	void runTask();
+	std::mutex queueMutex;
+	std::queue<std::function<void()>> jobQueue; //std::function<void()> is a place holder for a random tbd function that the queue will hold
+	std::vector<std::thread> threads; //Holds all the treads currently running
+	std::condition_variable queueCV;
+};
+
+ThreadPool::ThreadPool(const std::size_t threadNum){
+	for (size_t i = 0; i < threadNum ; i++){
+		threads.emplace_back(std::thread(runTask));
+	}
+}
+
+void ThreadPool::queueJob(std::function<void()> job){
+	{
+		//need to lock queue
+		std::unique_lock<std::mutex> lockQueue(queueMutex);
+		jobQueue.push(job); //pushes job into queue
+	}
+	queueCV.notify_one();
+
+}
+
+void ThreadPool::runTask(){
+	//Always running! will do something when there is a function in the queue
+	while(true){
+		std::function<void()> currentJob;
+		{
+			//lock queue
+			std::unique_lock<std::mutex> lock(queueMutex);
+			queueCV.wait(lock, [this] {
+				return !jobQueue.empty(); //Waits for jobQueue to return NOT empty
+			});
+			currentJob = jobQueue.front();
+			jobQueue.pop();
+		}
+		currentJob(); //then run currentJob;
+	}
+}
+
+ThreadPool threadPool(MAX_THREADS); //creates a new threadPool class
 
 // Update Nbody Simulation
 void update() {
@@ -58,29 +109,19 @@ void update() {
 	std::mutex threadCountMutex; //Protects the threadCount
 	std::condition_variable cv;
 
-	const int MAX_THREADS = 3; //N/10; //Max number of threads depends on total no bodies. A ration between cost savings and cost to make threads
-
 	std::chrono::system_clock::time_point time1 = std::chrono::system_clock::now();
 	// For each body
 	for(int i = 0; i < N; ++i) {
+
 		size_t activeThreads = 0;
 
 		std::cout << "\nHI" ;
 
-		std::unique_lock<std::mutex> lock(controlMutex);
-		cv.wait(lock, [&activeThreads, MAX_THREADS]() {return activeThreads < MAX_THREADS;}); //wait untill the number of active threads is less than max threads
-
-		threadCountMutex.lock();
-		activeThreads++; //Add count to activeThreads
-		std::cout << "\nActive Threads " << activeThreads;
-		threadCountMutex.unlock();
-
 		//THREADED SECTION
 		// For each following body
 		for(int j = i+1; j < N; ++j) {
-			std::thread thread1([&acc, i, j, &protectMutex, &threadCountMutex, &cv, &activeThreads, &controlMutex, MAX_THREADS](){ //Start a thread
 
-
+			threadPool.queueJob([&acc, i, j, &protectMutex, &threadCountMutex, &cv, &activeThreads, &controlMutex]() -> void {
 				// Difference in position
 				vec2 dx = bodies[i].pos - bodies[j].pos;
 
@@ -106,8 +147,7 @@ void update() {
 				threadCountMutex.unlock();
 				cv.notify_one(); //notifies another thread that it can continue
 			});
-			thread1.detach();
-			//std::cout << "\n End of J loop " << j;
+
 		}
 
 		std::chrono::system_clock::time_point time1b = std::chrono::system_clock::now();

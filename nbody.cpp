@@ -21,7 +21,7 @@
 //#define LARGE
 
 #if defined(SMALL)
-	const int N = 10;
+	const int N = 500;
 #elif defined(LARGE)
 	const int N = 5000;
 #endif
@@ -30,7 +30,7 @@
 const double min2 = 2.0;
 const double G = 1 * 10e-10;
 const double dt = 0.05;
-const int NO_STEPS = 10;
+const int NO_STEPS = 1000;
 
 // Size of Window/Output image
 const int width = 1920;
@@ -39,10 +39,10 @@ const int height = 1080;
 // Bodies
 body bodies[N];
 std::mutex coutMut;
-
+//std::mutex test;
 
 // Update Nbody Simulation
-void update() { //what can llel???
+void update() {
 
 	// Acceleration
 	vec2 acc[N];
@@ -53,36 +53,33 @@ void update() { //what can llel???
 	}
 
 	//For each update loop create an array of threads which will calculate bodyUpdate parallel to everything else
-	//std::thread bodyUpdateArray[N];
-	//std::vector<std::thread> innerLoopThread;
-	std::mutex protectMutex; //
-	std::mutex controlMutex;
-	std::mutex threadCountMutex;
+	std::mutex protectMutex; //Protects shared acc[] 
+	std::mutex controlMutex; //Used to control cv.wait()
+	std::mutex threadCountMutex; //Protects the threadCount
 	std::condition_variable cv;
 
-	const int MAX_THREADS = 10; //N/10; //Max number of threads depends on total no bodies. A ration between cost savings and cost to make threads
+	const int MAX_THREADS = 3; //N/10; //Max number of threads depends on total no bodies. A ration between cost savings and cost to make threads
 
 	std::chrono::system_clock::time_point time1 = std::chrono::system_clock::now();
 	// For each body
 	for(int i = 0; i < N; ++i) {
 		size_t activeThreads = 0;
 
+		std::cout << "\nHI" ;
+
+		std::unique_lock<std::mutex> lock(controlMutex);
+		cv.wait(lock, [&activeThreads, MAX_THREADS]() {return activeThreads < MAX_THREADS;}); //wait untill the number of active threads is less than max threads
+
+		threadCountMutex.lock();
+		activeThreads++; //Add count to activeThreads
+		std::cout << "\nActive Threads " << activeThreads;
+		threadCountMutex.unlock();
+
 		//THREADED SECTION
 		// For each following body
 		for(int j = i+1; j < N; ++j) {
-			coutMut.lock();
-			coutMut.unlock();
-			//wait until thread is avaliable
-			std::unique_lock<std::mutex> lock(controlMutex);
-			cv.wait(lock, [&activeThreads, MAX_THREADS]() {return activeThreads < MAX_THREADS;}); //NEED TO PROTECT ACTIVE THREAD
-			
-			threadCountMutex.lock();
-			activeThreads++;
-			threadCountMutex.unlock();
-			std::cout << "\nStarted thread" << activeThreads;
-			lock.unlock();
+			std::thread thread1([&acc, i, j, &protectMutex, &threadCountMutex, &cv, &activeThreads, &controlMutex, MAX_THREADS](){ //Start a thread
 
-			std::thread thread1([&acc, i, j, &protectMutex, &threadCountMutex, &cv, &activeThreads, &lock](){
 
 				// Difference in position
 				vec2 dx = bodies[i].pos - bodies[j].pos;
@@ -98,62 +95,32 @@ void update() { //what can llel???
 					// Force between bodies
 					double f = -G*bodies[i].mass*bodies[j].mass / d2;
 
-					std::lock_guard<std::mutex> lg(protectMutex);
+					std::lock_guard<std::mutex> lg(protectMutex); //Protects acc[]
 					// Add to acceleration
 					acc[i] += (u * f / bodies[i].mass); //Okay to do threaded as not depended as value. HOWEVER CRIT SECTION SO PROTECT
 					acc[j] -= (u * f / bodies[j].mass);
 				}
-				//PROTECT MUTEX
 
-				//lock.lock();
 				threadCountMutex.lock();
-				activeThreads--; //Protect??
-				std::cout << "\nThread finished: " << activeThreads;
+				if(activeThreads != 0) activeThreads--;
 				threadCountMutex.unlock();
-
-				//lock.unlock();
-
-				coutMut.lock();
-				std::cout << "\nUNLOCKED";
-				coutMut.unlock();
-
-				cv.notify_one(); //notifies a thread that it can continue
+				cv.notify_one(); //notifies another thread that it can continue
 			});
 			thread1.detach();
+			//std::cout << "\n End of J loop " << j;
 		}
 
 		std::chrono::system_clock::time_point time1b = std::chrono::system_clock::now();
 
-		//Ensure all the inner loop threads are finished
-		// for (auto &thread : innerLoopThread){
-		// 	if(thread.joinable()){
-		// 		thread.join();
-		// 	}
-		// }
+		coutMut.lock();
+		std::cout << "\n End of I loop " << i;
+		std::cout << "\nactive threads = " << activeThreads;
 
-	std::unique_lock<std::mutex> finishedThreadLock(controlMutex);
-	cv.wait(finishedThreadLock, [&activeThreads]() {return activeThreads == 0;});
+		// std::unique_lock<std::mutex> finishedThreadLock(controlMutex);
+		// cv.wait(finishedThreadLock, [&activeThreads]() {return activeThreads == 0;}); //Waits until all activeThreads are finished
 
-	// 	// Threaded
-	// 	bodyUpdateArray[i] = std::thread([&acc, i] {
-	// 		// Update Position
-	// 		bodies[i].pos += bodies[i].vel * dt;
-
-	// 		// Update Velocity
-	// 		bodies[i].vel += acc[i] * dt;
-	// 	}); 
-		
-	// 	//std::chrono::system_clock::time_point time2b = std::chrono::system_clock::now();
-	std::cout << "\nTime Big loop: " << std::chrono::duration_cast<std::chrono::microseconds>(time1b - time1).count()/1000000.0 << std::endl; 
-	// 	}
-
-
-	// innerLoopThread.clear();
-	
-	// //waiting for all threads to finish
-	// for(int i = 0 ; i < N ; i++){
-	// 	bodyUpdateArray[i].join();
-	// }
+		std::cout << "\nTime Big loop: " << std::chrono::duration_cast<std::chrono::microseconds>(time1b - time1).count()/1000000.0 << std::endl; 
+		coutMut.unlock();
 
 	// For each body
 	// Put into thread????
@@ -165,6 +132,7 @@ void update() { //what can llel???
 		bodies[i].vel += acc[i] * dt;
 	}
 	}
+
 }
 
 // Initialise NBody Simulation

@@ -23,7 +23,7 @@
 //#define LARGE
 
 #if defined(SMALL)
-	const int N = 1000;
+	const int N = 10;
 #elif defined(LARGE)
 	const int N = 5000;
 #endif
@@ -33,15 +33,20 @@ const double min2 = 2.0;
 const double G = 1 * 10e-10;
 const double dt = 0.05;
 const int NO_STEPS = 10;
+const int MAX_THREADS = 1; //N/10; //Max number of threads depends on total no bodies. A ration between cost savings and cost to make threads
 
 // Size of Window/Output image
 const int width = 1920;
 const int height = 1080;
+int count = 0;
 
 // Bodies
 body bodies[N];
 
 std::mutex queueMutex; //mutex to protect the jobqueue
+std::mutex cvMutex;
+std::mutex terminateMutex;
+std::mutex accMutex;
 std::queue<std::function<void()>> jobQueue; //std::function<void()> is a place holder for a random tbd function that the queue will hold
 std::vector<std::thread> threads; //
 std::condition_variable queueCV;
@@ -53,43 +58,88 @@ void queueJob(std::function<void()> job){
 		std::unique_lock<std::mutex> lockQueue(queueMutex);
 		jobQueue.push(job);
 		//std::cout << "\nPushed Job"; 
-
 	}
 	queueCV.notify_one();
-
+	//std::cout << "\nNotified queue"; 
 }
 
 void runTask(){
-	//Always running! will do something when there is a function in the queue
+	//Each thread is always doing this. Will do something when there is a function in the queue
+	std::cout << "\nTASK RUNNING";
 	while(true){
 		std::function<void()> currentJob;
 		{
 			//lock queue
-			std::unique_lock<std::mutex> lock(queueMutex);
-			queueCV.wait(lock, [] {
-				return !jobQueue.empty() || terminate;
+			std::unique_lock<std::mutex> lock(cvMutex);
+			//std::cout << "\nQUEUE LOCKED WAITING FOR JOB";
+			queueCV.wait(lock, [] (){
+				return !jobQueue.empty() || terminate; 
 			});
-			if(terminate && jobQueue.empty()) break;
+			std::cout << "\nTHINGS GOIN";
+			
+			if(terminate && jobQueue.empty()){
+				return;
+			}
+			
 			currentJob = std::move(jobQueue.front());
 			jobQueue.pop();
 		}
 		currentJob();
+
 		//std::cout << "\nJob Finished ";
+
+		// 		std::function<void()> currentJob;
+		// bool currentJobEmpty = true;
+		// {
+		// 	//lock queue
+		// 	std::unique_lock<std::mutex> lock(queueMutex);
+
+		// 	if (!checkQueue()){
+		// 		currentJob = std::move(jobQueue.front());
+		// 		jobQueue.pop();
+		// 	}
+
+		// }
+		// //If current job is not empty 
+		// if(!currentJobEmpty){
+		// 	currentJob();
+		// }
+
+	}
+}
+
+void createThreads(){
+	for (size_t i = 0 ; i < MAX_THREADS; i++){
+		std::thread thread1(runTask);
+		threads.emplace_back(std::move(thread1));
 	}
 }
 
 bool checkQueue(){ //checks jobqueue to see if there are any waiting / processing threads. If there are returns false
-	bool queueEmpty;
 	{
 		std::unique_lock<std::mutex> lock(queueMutex);
-		queueEmpty = jobQueue.empty();
+		return jobQueue.empty();
 	}
-	return queueEmpty;
+}
+
+void stopThreads(){
+	//Stopping threads
+	{
+		std::unique_lock<std::mutex> lock(terminateMutex);
+		terminate = true; //runTask accesses so have to protect
+	}
+	queueCV.notify_all();
+
+	for(auto& thread : threads){
+		thread.join();
+	}
+	threads.clear();
 }
 
 // Update Nbody Simulation
 void update() { //what can llel???
-
+	count++;
+	std::cout << "UPDATE No " << count;
 	// Acceleration
 	vec2 acc[N];
 
@@ -99,33 +149,21 @@ void update() { //what can llel???
 	}
 
 	//For each update loop create an array of threads which will calculate bodyUpdate parallel to everything else
-	//std::thread bodyUpdateArray[N];
-	std::mutex protectMutex; //
-	std::mutex controlMutex;
-	std::mutex threadCountMutex;
-	std::condition_variable cv;
-
-	int activeThreads = 0;
-	const int maxThreads = 300; //N/10; //Max number of threads depends on total no bodies. A ration between cost savings and cost to make threads
-
-	for (size_t i = 0 ; i < maxThreads; i++){
-		threads.emplace_back(runTask);
-	}
 
 	// For each body
 	for(int i = 0; i < N; ++i) {
+
 		std::chrono::system_clock::time_point time1 = std::chrono::system_clock::now();
-		std::cout << "\nStarting Big Loop" << i; 
+		std::cout << "\nStarting Big Loop" << i;
 
 		//THREADED SECTION
 		// For each following body
-		std::cout << "j value";
 		for(int j = i+1; j < N; ++j) {
-		if (j == i+1) std::cout << "\nStarting SMALL Loop" << j; 
+
+		if (j == i+1) std::cout << "\nStarting SMALL Loop" << j;
 
 			//wait until thread is avaliable
 			queueJob([&acc, i, j](){
-			if (j == i+1) std::cout << "\nStarting Thread " << j; 
 
 				// Difference in position
 				vec2 dx = bodies[i].pos - bodies[j].pos;
@@ -141,45 +179,25 @@ void update() { //what can llel???
 					// Force between bodies
 					double f = -G*bodies[i].mass*bodies[j].mass / d2;
 
-					std::lock_guard<std::mutex> lg(queueMutex);
+					std::lock_guard<std::mutex> lg(accMutex);
 					// Add to acceleration
 					acc[i] += (u * f / bodies[i].mass); //Okay to do threaded as not depended as value. HOWEVER CRIT SECTION SO PROTECT
 					acc[j] -= (u * f / bodies[j].mass);
 				}
 			} );
-			//std::lock_guard<std::mutex> guardActiveThreads(threadCountMutex);
-			//while (activeThreads > maxThreads){cv.wait(mutLock);}
+
+			//std::cout << "\nHI";
 		}
 
-		while(!checkQueue()){
-			//RUNNN
-		}
+		// while(!checkQueue()){
+		// 	std::cout <<"\nWaiting for queue to finish";
+		// }
 
-		{
-			std::unique_lock<std::mutex> lock(queueMutex);
-			terminate = true; //runTask accesses so have to protect
-		}
-		queueCV.notify_all();
 		std::chrono::system_clock::time_point time1b = std::chrono::system_clock::now();
 			
 		// 	//std::chrono::system_clock::time_point time2b = std::chrono::system_clock::now();
 		std::cout << "\nTime SMALL loop: " << std::chrono::duration_cast<std::chrono::microseconds>(time1b - time1).count()/1000000.0 << std::endl; 
-
-		//Ensure all the inner loop threads are finished
-		for (auto &thread : threads){
-
-			if(thread.joinable()){
-				thread.join();
-			}
-				//std::cout << "\nSUP"; 
-		}
-				std::cout << "\nNo" << i; 
-
 	}
-
-	int test = 0;
-	std::cout << "\n update: " << test;
-	test++;
 
 	// For each body
 	// Put into thread????
@@ -261,7 +279,6 @@ void initialise() {
 				
 				// Draw Object
 				window.draw(shape);
-
 			}
 
 			// Display Window
@@ -276,12 +293,14 @@ void initialise() {
 
 		// Get start time
 		std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
-
+		createThreads();
 		// Run Simulation
 		for(int i = 0; i < NO_STEPS; i++) { //Updating 1000 times
 			// Update NBody Simluation
 			update();
 		}
+
+		stopThreads();
 
 		// Get end time
 		std::chrono::system_clock::time_point end = std::chrono::system_clock::now();

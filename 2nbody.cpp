@@ -1,12 +1,3 @@
-/*	Herron, Kait, 20011154, A3, 159.341
-
-	Programme using c++ and c++ thread api
-	Version 8.1.0
-
-	Unfortunately I ran into massive issues right at the end and could not figure out how to fix the error so it is not running :(
-	
-	The inner loop (j loop) is threaded, and a basic thread pool implementation was created to limit the number of threads in use (defined by MAX_THREADS).
-*/
 // System Headers
 #include <iostream>
 #include <cmath>
@@ -62,18 +53,15 @@ std::vector<std::thread> threads; //
 std::condition_variable queueCV;
 std::mutex  waitingThreadMut;
 std::condition_variable innerLoopCV;
-std::condition_variable waitCV;
-bool ready = false;
 
 bool terminate = false;
 
-void queueJob(std::function<void()> job){ //Takes the 'job' (function) and puts it into the queue where it will wait for a thread to pick it up
+void queueJob(std::function<void()> job){
 	{
 		//need to lock queue
 		std::unique_lock<std::mutex> lockQueue(queueMutex);
 		//if (jobQueue.size() == 0) std::cout << "\nbozo";
 		jobQueue.push(job);
-		//if (jobQueue.size() == 0) std::cout << "\nNoso"; //Should never be reached
 		//std::cout << "\nPushed Job"; 
 	}
 	queueCV.notify_one();
@@ -82,33 +70,30 @@ void queueJob(std::function<void()> job){ //Takes the 'job' (function) and puts 
 
 void runTask(){
 	//Each thread is always doing this. Will do something when there is a function in the queue
-	//std::cout << "\nTASK RUNNING";
+	std::cout << "\nTASK RUNNING";
 	while(true){
 		std::function<void()> currentJob;
 		{
 			//lock queue
-			std::unique_lock<std::mutex> lock(queueMutex);
-			//if (jobQueue.size() == 0) std::cout << "\nTest2"; //runs 5 times
+			std::unique_lock<std::mutex> lockk(queueMutex);
+//			if (jobQueue.size() == 0) std::cout << "\nTest2"; //runs 5 times
 			//if(jobQueue.size()) std::cout << "\nEMPTY";
 			//std::cout << "\nQUEUE LOCKED WAITING FOR JOB";
-			queueCV.wait(lock, [] (){
+			queueCV.wait(lockk, [] (){
 				return !jobQueue.empty() || terminate; 
 			});
 			//std::cout << "\nTHINGS GOIN";
-			//if (jobQueue.size() == 0) std::cout << "\nTest3"; 
+//			if (jobQueue.size() == 0) std::cout << "\nTest3";
 			if(terminate && jobQueue.empty()){ 
 				return;
 			}
-			if(jobQueue.empty()) continue;
-
+			
 			currentJob = std::move(jobQueue.front());
 			jobQueue.pop(); 
 			//std::cout << "\nSIZE: "<< jobQueue.size(); //crashing when it gets to zero?
 		}
-			queueCV.notify_one();
-			currentJob();
-
-		//if (jobQueue.size() == 0) std::cout << "\nFinal call";
+		queueCV.notify_one();
+		currentJob();
 	}
 }
 
@@ -142,8 +127,9 @@ void stopThreads(){
 
 // Update Nbody Simulation
 void update() { //what can llel???
-	//count++;
-	//std::cout << "UPDATE No " << count;
+	static size_t count = 0;
+	count++;
+	std::cout << "UPDATE No " << count << std::endl;
 	// Acceleration
 	vec2 acc[N];
 
@@ -158,14 +144,14 @@ void update() { //what can llel???
 	for(int i = 0; i < N; ++i) {
 
 		std::chrono::system_clock::time_point time1 = std::chrono::system_clock::now();
-		std::cout << "\nStarting Big Loop" << i;
+//		std::cout << "\nStarting Big Loop" << i;
 
 		//THREADED SECTION
 		// For each following body
 		for(int j = i+1; j < N; ++j) {
 
-		if (j == i+1) std::cout << "\nStarting SMALL Loop" << j;
-  
+//		if (j == i+1) std::cout << "\nStarting SMALL Loop" << j;
+
 			//wait until thread is avaliable
 			queueJob([&acc, i, j](){
 
@@ -184,33 +170,30 @@ void update() { //what can llel???
 					double f = -G*bodies[i].mass*bodies[j].mass / d2;
 
 					std::lock_guard<std::mutex> lg(accMutex);
-					//std::cout << "\nACC " << j; 
 					// Add to acceleration
 					acc[i] += (u * f / bodies[i].mass); //Okay to do threaded as not depended as value. HOWEVER CRIT SECTION SO PROTECT
 					acc[j] -= (u * f / bodies[j].mass);
 				}
 			} );
-		}
-			//std::cout << "\nHI";
 
-		std::chrono::system_clock::time_point time1b = std::chrono::system_clock::now();
-			
-		// 	//std::chrono::system_clock::time_point time2b = std::chrono::system_clock::now();
-		std::cout << "\nTime SMALL loop: " << std::chrono::duration_cast<std::chrono::microseconds>(time1b - time1).count()/1000000.0 << std::endl; 
-	}
+			//std::cout << "\nHI";
+		}
 
 		{ //cv variable that stops loop continuing until all threads have finished
-		//std::cout << "\nNO1";
-		//while(!jobQueue.empty()) queueCV.wait(waitLock);
-		// if (!jobQueue.empty()){
-		// 	queueCV.wait(waitLock, [] (){
-		// 		std::cout << "\nwould prayer help? :" << jobQueue.size();
-		// 		return jobQueue.empty(); 
-		// 	});
-		// }
-		//queueCV.notify_one();
-		//std::cout << "\nNO";
+			std::unique_lock<std::mutex> waitLock(queueMutex);
+//			std::cout << "\nNO";
+
+			queueCV.wait(waitLock, [] (){
+				return jobQueue.empty();
+			});
+			//queueCV.notify_one();
 		}
+
+//		std::chrono::system_clock::time_point time1b = std::chrono::system_clock::now();
+			
+		// 	//std::chrono::system_clock::time_point time2b = std::chrono::system_clock::now();
+//		std::cout << "\nTime SMALL loop: " << std::chrono::duration_cast<std::chrono::microseconds>(time1b - time1).count()/1000000.0 << std::endl; 
+	}
 
 	// For each body
 	// Put into thread????
@@ -222,6 +205,20 @@ void update() { //what can llel???
 		bodies[i].vel += acc[i] * dt;
 	}
 }
+
+// 	// Threaded
+// 	bodyUpdateArray[i] = std::thread([&acc, i] {
+// 		// Update Position
+// 		bodies[i].pos += bodies[i].vel * dt;
+
+// 		// Update Velocity
+// 		bodies[i].vel += acc[i] * dt;
+// 	}); 
+
+// //waiting for all threads to finish
+// for(int i = 0 ; i < N ; i++){
+// 	bodyUpdateArray[i].join();
+// }
 
 // Initialise NBody Simulation
 void initialise() {
@@ -286,10 +283,6 @@ void initialise() {
 #else
 	// Main Function - Benchmark
 	int main() {
-		printf( "----------------------------------------" );
-		printf( " 159.341 Assignment 3 Semester 1 2023 " );
-		printf( " Submitted by: Kait Herron, 20011154 " );
-	 	printf( "----------------------------------------" );
 		// Initialise NBody Simulation
 		initialise();
 
